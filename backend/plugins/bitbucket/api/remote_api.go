@@ -67,11 +67,14 @@ func listBitbucketWorkspaces(
 	err errors.Error,
 ) {
 	var res *http.Response
+	// GET /user/workspaces is the replacement for both the deprecated
+	// GET /user/permissions/workspaces and GET /workspaces endpoints (CHANGE-2770).
+	// Response: values[].workspace.{slug, uuid, type} — no name field in workspace_base.
 	res, err = apiClient.Get(
-		"/user/permissions/workspaces",
+		"/user/workspaces",
 		url.Values{
-			"sort":    {"workspace.slug"},
-			"fields":  {"values.workspace.slug,values.workspace.name,pagelen,page,size"},
+			"sort":    {"slug"},
+			"fields":  {"values.workspace.slug,values.workspace.name,values.workspace.uuid,pagelen,page,size"},
 			"page":    {fmt.Sprintf("%v", page.Page)},
 			"pagelen": {fmt.Sprintf("%v", page.PageLen)},
 		},
@@ -96,11 +99,16 @@ func listBitbucketWorkspaces(
 		return
 	}
 	for _, r := range resBody.Values {
+		slug := r.Workspace.Slug
+		name := r.Workspace.Name
+		if name == "" {
+			name = slug // workspace_base may omit name; fall back to slug
+		}
 		children = append(children, dsmodels.DsRemoteApiScopeListEntry[models.BitbucketRepo]{
 			Type:     api.RAS_ENTRY_TYPE_GROUP,
-			Id:       r.Workspace.Slug,
-			Name:     r.Workspace.Name,
-			FullName: r.Workspace.Name,
+			Id:       slug,
+			Name:     name,
+			FullName: name,
 		})
 	}
 	return
@@ -159,21 +167,65 @@ func searchBitbucketRepos(
 	children []dsmodels.DsRemoteApiScopeListEntry[models.BitbucketRepo],
 	err errors.Error,
 ) {
+	// GET /repositories (cross-workspace) is deprecated (CHANGE-2770).
+	// Use GET /repositories/{workspace} with a name filter instead.
+	// If search contains "/", treat prefix as workspace slug.
+	// Otherwise, resolve the first accessible workspace.
+	workspace := ""
+	repoSearch := params.Search
+	for i, c := range params.Search {
+		if c == '/' {
+			workspace = params.Search[:i]
+			repoSearch = params.Search[i+1:]
+			break
+		}
+	}
+
+	if workspace == "" {
+		// Resolve from user's workspaces
+		wsRes, wsErr := apiClient.Get(
+			"/user/workspaces",
+			url.Values{"fields": {"values.workspace.slug"}, "pagelen": {"1"}},
+			nil,
+		)
+		if wsErr != nil {
+			return nil, wsErr
+		}
+		wsBody := &models.WorkspaceResponse{}
+		if wsErr = api.UnmarshalResponse(wsRes, wsBody); wsErr != nil {
+			return nil, wsErr
+		}
+		if len(wsBody.Values) == 0 {
+			return
+		}
+		workspace = wsBody.Values[0].Workspace.Slug
+		repoSearch = params.Search
+	}
+
+	query := url.Values{
+		"sort":    {"name"},
+		"fields":  {"values.name,values.full_name,values.language,values.description,values.owner.display_name,values.created_on,values.updated_on,values.links.clone,values.links.html,pagelen,page,size"},
+		"page":    {fmt.Sprintf("%v", params.Page)},
+		"pagelen": {fmt.Sprintf("%v", params.PageSize)},
+	}
+	if repoSearch != "" {
+		query.Set("q", fmt.Sprintf(`name~"%s"`, repoSearch))
+	}
 	var res *http.Response
 	res, err = apiClient.Get(
-		"/repositories",
-		url.Values{
-			"sort":    {"name"},
-			"fields":  {"values.name,values.full_name,values.language,values.description,values.owner.display_name,values.created_on,values.updated_on,values.links.clone,values.links.html,pagelen,page,size"},
-			"role":    {"member"},
-			"q":       {fmt.Sprintf(`full_name~"%s"`, params.Search)},
-			"page":    {fmt.Sprintf("%v", params.Page)},
-			"pagelen": {fmt.Sprintf("%v", params.PageSize)},
-		},
+		fmt.Sprintf("/repositories/%s", workspace),
+		query,
 		nil,
 	)
 	if err != nil {
 		return nil, err
+	}
+	if res.StatusCode > 299 {
+		body, e := io.ReadAll(res.Body)
+		if e != nil {
+			return nil, errors.BadInput.Wrap(e, "failed to read response body")
+		}
+		return nil, errors.HttpStatus(res.StatusCode).New(string(body))
 	}
 	var resBody models.ReposResponse
 	err = api.UnmarshalResponse(res, &resBody)

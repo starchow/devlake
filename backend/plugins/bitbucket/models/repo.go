@@ -110,34 +110,45 @@ func (b BitbucketApiRepo) ConvertApiScope() *BitbucketRepo {
 	return scope
 }
 
+// WorkspaceResponse is the paginated response from GET /user/workspaces.
+// Each value has type "workspace_access" and contains a nested workspace object.
+// Note: the workspace_base object only contains slug/uuid/type/links — no name field.
 type WorkspaceResponse struct {
-	Pagelen int             `json:"pagelen"`
-	Page    int             `json:"page"`
-	Size    int             `json:"size"`
-	Values  []GroupResponse `json:"values"`
+	Pagelen int                    `json:"pagelen"`
+	Page    int                    `json:"page"`
+	Size    int                    `json:"size"`
+	Values  []WorkspaceAccessEntry `json:"values"`
 }
 
-type GroupResponse struct {
-	//Type       string `json:"type"`
-	//Permission string `json:"permission"`
-	//LastAccessed time.Time `json:"last_accessed"`
-	//AddedOn      time.Time `json:"added_on"`
-	Workspace WorkspaceItem `json:"workspace"`
+// WorkspaceAccessEntry is a single entry from GET /user/workspaces response.
+type WorkspaceAccessEntry struct {
+	Administrator bool          `json:"administrator"`
+	Type          string        `json:"type"`
+	Workspace     WorkspaceItem `json:"workspace"`
 }
 
+// WorkspaceItem represents the workspace_base object nested in the response.
 type WorkspaceItem struct {
-	//Type string `json:"type"`
-	//Uuid string `json:"uuid"`
 	Slug string `json:"slug" group:"id"`
 	Name string `json:"name" group:"name"`
+	Type string `json:"type"`
+	Uuid string `json:"uuid"`
+}
+
+// GroupResponse wraps WorkspaceItem to satisfy the plugin.ApiGroup interface.
+type GroupResponse struct {
+	WorkspaceItem
 }
 
 func (p GroupResponse) GroupId() string {
-	return p.Workspace.Slug
+	return p.Slug
 }
 
 func (p GroupResponse) GroupName() string {
-	return p.Workspace.Name
+	if p.Name != "" {
+		return p.Name
+	}
+	return p.Slug
 }
 
 type ReposResponse struct {

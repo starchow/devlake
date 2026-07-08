@@ -241,5 +241,10 @@ func ignoreHTTPStatus404(res *http.Response) errors.Error {
 	if res.StatusCode == http.StatusNotFound {
 		return api.ErrIgnoreAndContinue
 	}
+	// 410 Gone: Bitbucket Issues and Wikis are being sunset (mid-August 2026).
+	// Repositories with the issue tracker disabled or already removed return 410.
+	if res.StatusCode == http.StatusGone {
+		return api.ErrIgnoreAndContinue
+	}
 	return nil
 }
